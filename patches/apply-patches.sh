@@ -19,9 +19,6 @@ git apply -v ../../device/doogee/n370b/patches/0009-add-mtk-color-format-support
 git apply -v ../../device/doogee/n370b/patches/0013-fix_video_autoscaling.patch
 cd ../..
 cd system/netd
-git apply -v ../../device/doogee/n370b/patches/0010-wifi-tethering-fix.patch
+git apply -v ../../device/doogee/n370b/patches/NETD-mtl_patch-p1.patch
 cd ../..
-cd packages/apps/FMRadio/jni/fmr/ 
-git apply -v ../../../../../device/doogee/n370b/0014-fix-fm-radio-power-up-mt6737m-mt6627-chip.patch
-cd ../../../../..
 
