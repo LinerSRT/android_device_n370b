@@ -1,0 +1,28 @@
+From 238f18ee043459b591ca810717e5fecdc14465d8 Mon Sep 17 00:00:00 2001
+From: LinerSRT <serinity320@gmail.com>
+Date: Wed, 13 Feb 2019 15:06:59 +0000
+Subject: [PATCH] Mising-symbol-in-AV
+
+---
+ media/libstagefright/foundation/MediaBufferGroup.cpp | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/media/libstagefright/foundation/MediaBufferGroup.cpp b/media/libstagefright/foundation/MediaBufferGroup.cpp
+index 8e4d0641c..a68de9f81 100644
+--- a/media/libstagefright/foundation/MediaBufferGroup.cpp
++++ b/media/libstagefright/foundation/MediaBufferGroup.cpp
+@@ -138,6 +138,11 @@ bool MediaBufferGroup::has_buffers() {
+     return false;
+ }
+ 
++extern "C" status_t _ZN7android16MediaBufferGroup14acquire_bufferEPPNS_11MediaBufferEb(
++                    MediaBufferGroup* group, MediaBuffer **out, bool nonBlocking) {
++    return group->acquire_buffer(out, nonBlocking, 0);
++}
++
+ status_t MediaBufferGroup::acquire_buffer(
+         MediaBuffer **out, bool nonBlocking, size_t requestedSize) {
+     Mutex::Autolock autoLock(mLock);
+-- 
+2.17.1
+

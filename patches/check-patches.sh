@@ -15,6 +15,7 @@ git apply -v --check $SOURCE_DIR/device/doogee/n370b/patches/0007-Disable-usage-
 git apply -v --check $SOURCE_DIR/device/doogee/n370b/patches/0008-Partial-Revert-Camera1-API-Support-SW-encoders-for-n.patch
 git apply -v --check $SOURCE_DIR/device/doogee/n370b/patches/0009-add-mtk-color-format-support.patch
 git apply -v --check $SOURCE_DIR/device/doogee/n370b/patches/0013-fix_video_autoscaling.patch
+git apply -v --check $SOURCE_DIR/device/doogee/n370b/patches/0001-Mising-symbol-in-AV.patch
 cd $SOURCE_DIR/system/netd
 git apply -v --check $SOURCE_DIR/device/doogee/n370b/patches/NETD-mtl_patch-p1.patch
 cd $SOURCE_DIR/packages/providers/DownloadProvider
