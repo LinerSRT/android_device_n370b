@@ -1,0 +1,416 @@
+From ef020e014643e191395dcb0b155ef70a0143f9bd Mon Sep 17 00:00:00 2001
+From: LinerSRT <serinity320@gmail.com>
+Date: Wed, 13 Feb 2019 14:00:28 +0000
+Subject: [PATCH] revert for DP
+
+---
+ .../providers/downloads/DownloadProvider.java | 198 ++++++++++--------
+ .../downloads/DownloadStorageProvider.java    |  26 +--
+ ...bstractDownloadProviderFunctionalTest.java |  18 --
+ 3 files changed, 107 insertions(+), 135 deletions(-)
+
+diff --git a/src/com/android/providers/downloads/DownloadProvider.java b/src/com/android/providers/downloads/DownloadProvider.java
+index 7b966d8b..733a4bf9 100644
+--- a/src/com/android/providers/downloads/DownloadProvider.java
++++ b/src/com/android/providers/downloads/DownloadProvider.java
+@@ -20,9 +20,7 @@ import static android.provider.BaseColumns._ID;
+ import static android.provider.Downloads.Impl.COLUMN_DESTINATION;
+ import static android.provider.Downloads.Impl.COLUMN_MEDIA_SCANNED;
+ import static android.provider.Downloads.Impl.COLUMN_MIME_TYPE;
+-import static android.provider.Downloads.Impl.COLUMN_OTHER_UID;
+ import static android.provider.Downloads.Impl.DESTINATION_NON_DOWNLOADMANAGER_DOWNLOAD;
+-import static android.provider.Downloads.Impl.PERMISSION_ACCESS_ALL;
+ import static android.provider.Downloads.Impl._DATA;
+ 
+ import android.app.AppOpsManager;
+@@ -44,7 +42,6 @@ import android.database.DatabaseUtils;
+ import android.database.SQLException;
+ import android.database.sqlite.SQLiteDatabase;
+ import android.database.sqlite.SQLiteOpenHelper;
+-import android.database.sqlite.SQLiteQueryBuilder;
+ import android.net.Uri;
+ import android.os.Binder;
+ import android.os.ParcelFileDescriptor;
+@@ -99,14 +96,12 @@ public final class DownloadProvider extends ContentProvider {
+     private static final int MY_DOWNLOADS = 1;
+     /** URI matcher constant for the URI of an individual download belonging to the calling UID */
+     private static final int MY_DOWNLOADS_ID = 2;
+-    /** URI matcher constant for the URI of a download's request headers */
+-    private static final int MY_DOWNLOADS_ID_HEADERS = 3;
+     /** URI matcher constant for the URI of all downloads in the system */
+-    private static final int ALL_DOWNLOADS = 4;
++    private static final int ALL_DOWNLOADS = 3;
+     /** URI matcher constant for the URI of an individual download */
+-    private static final int ALL_DOWNLOADS_ID = 5;
++    private static final int ALL_DOWNLOADS_ID = 4;
+     /** URI matcher constant for the URI of a download's request headers */
+-    private static final int ALL_DOWNLOADS_ID_HEADERS = 6;
++    private static final int REQUEST_HEADERS_URI = 5;
+     static {
+         sURIMatcher.addURI("downloads", "my_downloads", MY_DOWNLOADS);
+         sURIMatcher.addURI("downloads", "my_downloads/#", MY_DOWNLOADS_ID);
+@@ -114,16 +109,16 @@ public final class DownloadProvider extends ContentProvider {
+         sURIMatcher.addURI("downloads", "all_downloads/#", ALL_DOWNLOADS_ID);
+         sURIMatcher.addURI("downloads",
+                 "my_downloads/#/" + Downloads.Impl.RequestHeaders.URI_SEGMENT,
+-                MY_DOWNLOADS_ID_HEADERS);
++                REQUEST_HEADERS_URI);
+         sURIMatcher.addURI("downloads",
+                 "all_downloads/#/" + Downloads.Impl.RequestHeaders.URI_SEGMENT,
+-                ALL_DOWNLOADS_ID_HEADERS);
++                REQUEST_HEADERS_URI);
+         // temporary, for backwards compatibility
+         sURIMatcher.addURI("downloads", "download", MY_DOWNLOADS);
+         sURIMatcher.addURI("downloads", "download/#", MY_DOWNLOADS_ID);
+         sURIMatcher.addURI("downloads",
+                 "download/#/" + Downloads.Impl.RequestHeaders.URI_SEGMENT,
+-                MY_DOWNLOADS_ID_HEADERS);
++                REQUEST_HEADERS_URI);
+     }
+ 
+     /** Different base URIs that could be used to access an individual download */
+@@ -185,6 +180,43 @@ public final class DownloadProvider extends ContentProvider {
+     private int mSystemUid = -1;
+     private int mDefContainerUid = -1;
+ 
++    /**
++     * This class encapsulates a SQL where clause and its parameters.  It makes it possible for
++     * shared methods (like {@link DownloadProvider#getWhereClause(Uri, String, String[], int)})
++     * to return both pieces of information, and provides some utility logic to ease piece-by-piece
++     * construction of selections.
++     */
++    private static class SqlSelection {
++        public StringBuilder mWhereClause = new StringBuilder();
++        public List<String> mParameters = new ArrayList<String>();
++
++        public <T> void appendClause(String newClause, final T... parameters) {
++            if (newClause == null || newClause.isEmpty()) {
++                return;
++            }
++            if (mWhereClause.length() != 0) {
++                mWhereClause.append(" AND ");
++            }
++            mWhereClause.append("(");
++            mWhereClause.append(newClause);
++            mWhereClause.append(")");
++            if (parameters != null) {
++                for (Object parameter : parameters) {
++                    mParameters.add(parameter.toString());
++                }
++            }
++        }
++
++        public String getSelection() {
++            return mWhereClause.toString();
++        }
++
++        public String[] getParameters() {
++            String[] array = new String[mParameters.size()];
++            return mParameters.toArray(array);
++        }
++    }
++
+     /**
+      * Creates and updated database on demand when opening it.
+      * Helper class to create database the first time the provider is
+@@ -894,6 +926,8 @@ public final class DownloadProvider extends ContentProvider {
+              final String selection, final String[] selectionArgs,
+              final String sort) {
+ 
++        Helpers.validateSelection(selection, sAppReadableColumnsSet);
++
+         SQLiteDatabase db = mOpenHelper.getReadableDatabase();
+ 
+         int match = sURIMatcher.match(uri);
+@@ -904,24 +938,16 @@ public final class DownloadProvider extends ContentProvider {
+             throw new IllegalArgumentException("Unknown URI: " + uri);
+         }
+ 
+-        if (match == MY_DOWNLOADS_ID_HEADERS || match == ALL_DOWNLOADS_ID_HEADERS) {
++        if (match == REQUEST_HEADERS_URI) {
+             if (projection != null || selection != null || sort != null) {
+                 throw new UnsupportedOperationException("Request header queries do not support "
+                                                         + "projections, selections or sorting");
+             }
+-
+-            // Headers are only available to callers with full access.
+-            getContext().enforceCallingOrSelfPermission(
+-                    Downloads.Impl.PERMISSION_ACCESS_ALL, Constants.TAG);
+-
+-            final SQLiteQueryBuilder qb = getQueryBuilder(uri, match);
+-            projection = new String[] {
+-                    Downloads.Impl.RequestHeaders.COLUMN_HEADER,
+-                    Downloads.Impl.RequestHeaders.COLUMN_VALUE
+-            };
+-            return qb.query(db, projection, null, null, null, null, null);
++            return queryRequestHeaders(db, uri);
+         }
+ 
++        SqlSelection fullSelection = getWhereClause(uri, selection, selectionArgs, match);
++
+         if (shouldRestrictVisibility()) {
+             if (projection == null) {
+                 projection = sAppReadableColumnsArray.clone();
+@@ -948,8 +974,8 @@ public final class DownloadProvider extends ContentProvider {
+             logVerboseQueryInfo(projection, selection, selectionArgs, sort, db);
+         }
+ 
+-        final SQLiteQueryBuilder qb = getQueryBuilder(uri, match);
+-        final Cursor ret = qb.query(db, projection, selection, selectionArgs, null, null, sort);
++        Cursor ret = db.query(DB_TABLE, projection, fullSelection.getSelection(),
++                fullSelection.getParameters(), null, null, sort);
+ 
+         if (ret != null) {
+             ret.setNotificationUri(getContext().getContentResolver(), uri);
+@@ -1034,6 +1060,35 @@ public final class DownloadProvider extends ContentProvider {
+         }
+     }
+ 
++    /**
++     * Handle a query for the custom request headers registered for a download.
++     */
++    private Cursor queryRequestHeaders(SQLiteDatabase db, Uri uri) {
++        String where = Downloads.Impl.RequestHeaders.COLUMN_DOWNLOAD_ID + "="
++                       + getDownloadIdFromUri(uri);
++        String[] projection = new String[] {Downloads.Impl.RequestHeaders.COLUMN_HEADER,
++                                            Downloads.Impl.RequestHeaders.COLUMN_VALUE};
++        return db.query(Downloads.Impl.RequestHeaders.HEADERS_DB_TABLE, projection, where,
++                        null, null, null, null);
++    }
++
++    /**
++     * Delete request headers for downloads matching the given query.
++     */
++    private void deleteRequestHeaders(SQLiteDatabase db, String where, String[] whereArgs) {
++        String[] projection = new String[] {Downloads.Impl._ID};
++        Cursor cursor = db.query(DB_TABLE, projection, where, whereArgs, null, null, null, null);
++        try {
++            for (cursor.moveToFirst(); !cursor.isAfterLast(); cursor.moveToNext()) {
++                long id = cursor.getLong(0);
++                String idWhere = Downloads.Impl.RequestHeaders.COLUMN_DOWNLOAD_ID + "=" + id;
++                db.delete(Downloads.Impl.RequestHeaders.HEADERS_DB_TABLE, idWhere, null);
++            }
++        } finally {
++            cursor.close();
++        }
++    }
++
+     /**
+      * @return true if we should restrict the columns readable by this caller
+      */
+@@ -1115,11 +1170,13 @@ public final class DownloadProvider extends ContentProvider {
+                     break;
+                 }
+ 
+-                final SQLiteQueryBuilder qb = getQueryBuilder(uri, match);
+-                count = qb.update(db, filteredValues, where, whereArgs);
++                final SqlSelection selection = getWhereClause(uri, where, whereArgs, match);
++                count = db.update(DB_TABLE, filteredValues, selection.getSelection(),
++                        selection.getParameters());
+                 if (updateSchedule || isCompleting) {
+                     final long token = Binder.clearCallingIdentity();
+-                    try (Cursor cursor = qb.query(db, null, where, whereArgs, null, null, null)) {
++                    try (Cursor cursor = db.query(DB_TABLE, null, selection.getSelection(),
++                            selection.getParameters(), null, null, null)) {
+                         final DownloadInfo.Reader reader = new DownloadInfo.Reader(resolver,
+                                 cursor);
+                         final DownloadInfo info = new DownloadInfo(context);
+@@ -1165,64 +1222,21 @@ public final class DownloadProvider extends ContentProvider {
+         }
+     }
+ 
+-    /**
+-     * Create a query builder that filters access to the underlying database
+-     * based on both the requested {@link Uri} and permissions of the caller.
+-     */
+-    private SQLiteQueryBuilder getQueryBuilder(final Uri uri, int match) {
+-        final String table;
+-        final StringBuilder where = new StringBuilder();
+-        switch (match) {
+-            // The "my_downloads" view normally limits the caller to operating
+-            // on downloads that they either directly own, or have been given
+-            // indirect ownership of via OTHER_UID.
+-            case MY_DOWNLOADS_ID:
+-                appendWhereExpression(where, _ID + "=" + getDownloadIdFromUri(uri));
+-                // fall-through
+-            case MY_DOWNLOADS:
+-                table = DB_TABLE;
+-                if (getContext().checkCallingOrSelfPermission(
+-                        PERMISSION_ACCESS_ALL) != PackageManager.PERMISSION_GRANTED) {
+-                    appendWhereExpression(where, Constants.UID + "=" + Binder.getCallingUid()
+-                            + " OR " + COLUMN_OTHER_UID + "=" + Binder.getCallingUid());
+-                }
+-                break;
+-
+-            // The "all_downloads" view is already limited via <path-permission>
+-            // to only callers holding the ACCESS_ALL_DOWNLOADS permission, but
+-            // access may also be delegated via Uri permission grants.
+-            case ALL_DOWNLOADS_ID:
+-                appendWhereExpression(where, _ID + "=" + getDownloadIdFromUri(uri));
+-                // fall-through
+-            case ALL_DOWNLOADS:
+-                table = DB_TABLE;
+-                break;
+-
+-            // Headers are limited to callers holding the ACCESS_ALL_DOWNLOADS
+-            // permission, since they're only needed for executing downloads.
+-            case MY_DOWNLOADS_ID_HEADERS:
+-            case ALL_DOWNLOADS_ID_HEADERS:
+-                table = Downloads.Impl.RequestHeaders.HEADERS_DB_TABLE;
+-                appendWhereExpression(where, Downloads.Impl.RequestHeaders.COLUMN_DOWNLOAD_ID + "="
+-                        + getDownloadIdFromUri(uri));
+-                break;
+-
+-            default:
+-                throw new UnsupportedOperationException("Unknown URI: " + uri);
++    private SqlSelection getWhereClause(final Uri uri, final String where, final String[] whereArgs,
++            int uriMatch) {
++        SqlSelection selection = new SqlSelection();
++        selection.appendClause(where, whereArgs);
++        if (uriMatch == MY_DOWNLOADS_ID || uriMatch == ALL_DOWNLOADS_ID) {
++            selection.appendClause(Downloads.Impl._ID + " = ?", getDownloadIdFromUri(uri));
+         }
+-
+-        final SQLiteQueryBuilder qb = new SQLiteQueryBuilder();
+-        qb.setStrict(true);
+-        qb.setTables(table);
+-        qb.appendWhere(where);
+-        return qb;
+-    }
+-
+-    private static void appendWhereExpression(StringBuilder sb, String expression) {
+-        if (sb.length() > 0) {
+-            sb.append(" AND ");
++        if ((uriMatch == MY_DOWNLOADS || uriMatch == MY_DOWNLOADS_ID)
++                && getContext().checkCallingOrSelfPermission(Downloads.Impl.PERMISSION_ACCESS_ALL)
++                != PackageManager.PERMISSION_GRANTED) {
++            selection.appendClause(
++                    Constants.UID + "= ? OR " + Downloads.Impl.COLUMN_OTHER_UID + "= ?",
++                    Binder.getCallingUid(), Binder.getCallingUid());
+         }
+-        sb.append('(').append(expression).append(')');
++        return selection;
+     }
+ 
+     /**
+@@ -1246,8 +1260,11 @@ public final class DownloadProvider extends ContentProvider {
+             case MY_DOWNLOADS_ID:
+             case ALL_DOWNLOADS:
+             case ALL_DOWNLOADS_ID:
+-                final SQLiteQueryBuilder qb = getQueryBuilder(uri, match);
+-                try (Cursor cursor = qb.query(db, null, where, whereArgs, null, null, null)) {
++                final SqlSelection selection = getWhereClause(uri, where, whereArgs, match);
++                deleteRequestHeaders(db, selection.getSelection(), selection.getParameters());
++
++                try (Cursor cursor = db.query(DB_TABLE, null, selection.getSelection(),
++                        selection.getParameters(), null, null, null)) {
+                     final DownloadInfo.Reader reader = new DownloadInfo.Reader(resolver, cursor);
+                     final DownloadInfo info = new DownloadInfo(context);
+                     while (cursor.moveToNext()) {
+@@ -1287,15 +1304,10 @@ public final class DownloadProvider extends ContentProvider {
+                         if (!Downloads.Impl.isStatusCompleted(info.mStatus)) {
+                             info.sendIntentIfRequested();
+                         }
+-
+-                        // Delete any headers for this download
+-                        db.delete(Downloads.Impl.RequestHeaders.HEADERS_DB_TABLE,
+-                                Downloads.Impl.RequestHeaders.COLUMN_DOWNLOAD_ID + "=?",
+-                                new String[] { Long.toString(info.mId) });
+                     }
+                 }
+ 
+-                count = qb.delete(db, where, whereArgs);
++                count = db.delete(DB_TABLE, selection.getSelection(), selection.getParameters());
+                 break;
+ 
+             default:
+@@ -1527,4 +1539,4 @@ public final class DownloadProvider extends ContentProvider {
+         final Uri uri = ContentUris.withAppendedId(Downloads.Impl.ALL_DOWNLOADS_CONTENT_URI, id);
+         getContext().revokeUriPermission(uri, ~0);
+     }
+-}
++}
+\ No newline at end of file
+diff --git a/src/com/android/providers/downloads/DownloadStorageProvider.java b/src/com/android/providers/downloads/DownloadStorageProvider.java
+index 6f632b44..acf7c536 100644
+--- a/src/com/android/providers/downloads/DownloadStorageProvider.java
++++ b/src/com/android/providers/downloads/DownloadStorageProvider.java
+@@ -108,8 +108,8 @@ public class DownloadStorageProvider extends DocumentsProvider {
+         final MatrixCursor result = new MatrixCursor(resolveRootProjection(projection));
+         final RowBuilder row = result.newRow();
+         row.add(Root.COLUMN_ROOT_ID, DOC_ID_ROOT);
+-        row.add(Root.COLUMN_FLAGS, Root.FLAG_LOCAL_ONLY | Root.FLAG_SUPPORTS_RECENTS
+-                | Root.FLAG_SUPPORTS_CREATE | Root.FLAG_SUPPORTS_SEARCH);
++        row.add(Root.COLUMN_FLAGS,
++                Root.FLAG_LOCAL_ONLY | Root.FLAG_SUPPORTS_RECENTS | Root.FLAG_SUPPORTS_CREATE);
+         row.add(Root.COLUMN_ICON, R.mipmap.ic_launcher_download);
+         row.add(Root.COLUMN_TITLE, getContext().getString(R.string.root_downloads));
+         row.add(Root.COLUMN_DOCUMENT_ID, DOC_ID_ROOT);
+@@ -313,28 +313,6 @@ public class DownloadStorageProvider extends DocumentsProvider {
+         return result;
+     }
+ 
+-    @Override
+-    public Cursor querySearchDocuments(String rootId, String query, String[] projection)
+-            throws FileNotFoundException {
+-        final MatrixCursor result = new MatrixCursor(resolveDocumentProjection(projection));
+-
+-        // Delegate to real provider
+-        final long token = Binder.clearCallingIdentity();
+-        Cursor cursor = null;
+-        try {
+-            cursor = mDm.query(new DownloadManager.Query().setOnlyIncludeVisibleInDownloadsUi(true)
+-                    .setFilterByString(query));
+-            copyNotificationUri(result, cursor);
+-            while (cursor.moveToNext()) {
+-                includeDownloadFromCursor(result, cursor);
+-            }
+-        } finally {
+-            IoUtils.closeQuietly(cursor);
+-            Binder.restoreCallingIdentity(token);
+-        }
+-        return result;
+-    }
+-
+     @Override
+     public ParcelFileDescriptor openDocument(String docId, String mode, CancellationSignal signal)
+             throws FileNotFoundException {
+diff --git a/tests/src/com/android/providers/downloads/AbstractDownloadProviderFunctionalTest.java b/tests/src/com/android/providers/downloads/AbstractDownloadProviderFunctionalTest.java
+index 813252a8..0330fd38 100644
+--- a/tests/src/com/android/providers/downloads/AbstractDownloadProviderFunctionalTest.java
++++ b/tests/src/com/android/providers/downloads/AbstractDownloadProviderFunctionalTest.java
+@@ -172,7 +172,6 @@ public abstract class AbstractDownloadProviderFunctionalTest extends
+ 
+         mSystemFacade.setUp();
+         assertTrue(isDatabaseEmpty()); // ensure we're not messing with real data
+-        assertTrue(isDatabaseSecureAgainstBadSelection());
+         mServer = new MockWebServer();
+         mServer.play();
+     }
+@@ -201,23 +200,6 @@ public abstract class AbstractDownloadProviderFunctionalTest extends
+         }
+     }
+ 
+-    private boolean isDatabaseSecureAgainstBadSelection() {
+-        Cursor cursor = null;
+-        try {
+-            cursor = mResolver.query(Downloads.Impl.ALL_DOWNLOADS_CONTENT_URI, null,
+-                    "('1'='1'))) ORDER BY lastmod DESC--", null, null);
+-        }
+-        catch (Exception e) {
+-            return true;
+-        } finally {
+-            if (cursor != null) {
+-                cursor.close();
+-            }
+-        }
+-
+-        return false;
+-    }
+-
+     /**
+      * Remove any downloaded files and delete any lingering downloads.
+      */
+-- 
+2.17.1
+
