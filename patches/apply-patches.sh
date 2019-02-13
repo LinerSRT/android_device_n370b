@@ -9,7 +9,7 @@ cd bionic
 git apply -v ../device/doogee/n370b/patches/0002-Apply-LIBC-version-to-__pthread_gettid.patch
 cd ..
 cd system/sepolicy
-git apply -v ../../device/doogee/n370b/patches/Revert-back-to-policy-version-29.patch
+git apply -v ../../device/doogee/n370b/patches/0001-sepolicy-v29-patch.patch
 cd ../..
 cd frameworks/av
 git apply -v ../../device/doogee/n370b/patches/0006-fix-access-wvm-to-ReadOptions.patch
